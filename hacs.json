@@ -1,6 +1,7 @@
 {
   "name": "CellarTracker",
-  "description": "Integration for managing your wine cellar with CellarTracker.",
+  "description": "Integration for displaying the content of a wine cellar with CellarTracker.",
+  "render_readme": true,
   "version": "0.0.3",
   "domain": ["cellar_tracker"],
   "documentation": "https://github.com/GuvHas/cellar_tracker",
