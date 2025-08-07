@@ -1,0 +1,9 @@
+{
+  "domain": "cellar_tracker",
+  "name": "CellarTracker",
+  "version": "0.0.3",
+  "documentation": "https://github.com/GuvHas/cellar_tracker",
+  "requirements": ["cellartracker"],
+  "dependencies": [],
+  "codeowners": ["@GuvHas"]
+}
