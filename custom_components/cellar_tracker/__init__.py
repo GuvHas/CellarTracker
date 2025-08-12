@@ -2,17 +2,34 @@
 
 from datetime import timedelta
 import logging
+import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.helpers.typing import ConfigType
 
 from .cellar_data import WineCellarData
-from .const import DOMAIN
 
+DOMAIN = "cellar_tracker"
 _LOGGER = logging.getLogger(__name__)
 
-async def async_setup(hass: HomeAssistant, config: dict):
-    """Set up the integration from yaml config (import)."""
+CONFIG_SCHEMA = vol.Schema(
+    {
+        DOMAIN: vol.Schema(
+            {
+                vol.Required("username"): cv.string,
+                vol.Required("password"): cv.string,
+                vol.Optional("scan_interval", default=3600): cv.positive_int,
+            }
+        )
+    },
+    extra=vol.ALLOW_EXTRA,
+)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up the cellar_tracker component from YAML config."""
     if DOMAIN not in config:
         return True
 
@@ -27,7 +44,7 @@ async def async_setup(hass: HomeAssistant, config: dict):
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["default"] = cellar_data
 
-    # Trigger config entry for import
+    # Import YAML config as a config entry
     hass.async_create_task(
         hass.config_entries.flow.async_init(
             DOMAIN,
@@ -37,6 +54,7 @@ async def async_setup(hass: HomeAssistant, config: dict):
     )
 
     return True
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: config_entries.ConfigEntry) -> bool:
     """Set up cellar_tracker from a config entry."""
@@ -50,14 +68,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: config_entries.ConfigEnt
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = cellar_data
 
-    # Forward setup of sensor platform
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
 
     return True
 
+
 async def async_unload_entry(hass: HomeAssistant, entry: config_entries.ConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload cellar_tracker config entry and remove its entities."""
     unload_ok = await hass.config_entries.async_forward_entry_unload(entry, "sensor")
     if unload_ok:
+        # Remove all entities linked to this config entry from entity registry
+        entity_registry = er.async_get(hass)
+        to_remove = [
+            entity_id
+            for entity_id, entity in entity_registry.entities.items()
+            if entity.config_entry_id == entry.entry_id
+        ]
+        for entity_id in to_remove:
+            entity_registry.async_remove(entity_id)
+
         hass.data[DOMAIN].pop(entry.entry_id)
+
     return unload_ok
