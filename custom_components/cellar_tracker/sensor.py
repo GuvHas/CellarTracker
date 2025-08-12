@@ -1,66 +1,66 @@
-"""Sensor platform for CellarTracker integration."""
-
 import logging
 import re
 from homeassistant.helpers.entity import Entity
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.core import HomeAssistant
 
 from .cellar_data import WineCellarData
-from . import DOMAIN
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up sensors for CellarTracker from a config entry."""
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
+    """Set up sensors based on config entry."""
     cellar_data: WineCellarData = hass.data[DOMAIN][entry.entry_id]
 
-    await cellar_data.async_update()
+    await cellar_data.async_update()  # Fetch initial data
 
-    sensors = []
+    devs = []
 
-    # Create wine sensors
-    for wine_key, data in cellar_data.get_readings().items():
-        sensors.append(WineGroupedSensor(entry.entry_id, wine_key, data, cellar_data))
+    # Add wine sensors for each wine key
+    for wine_key in cellar_data.get_wine_keys():
+        devs.append(CellarWineSensor(cellar_data, wine_key))
 
-    # Total bottles and total value sensors
-    sensors.append(TotalBottleSensor(entry.entry_id, cellar_data))
-    sensors.append(TotalValueSensor(entry.entry_id, cellar_data))
+    # Add total bottles and total value sensors
+    devs.append(TotalBottleSensor(cellar_data))
+    devs.append(TotalValueSensor(cellar_data))
 
-    async_add_entities(sensors, True)
+    async_add_entities(devs, update_before_add=True)
 
-class WineGroupedSensor(Entity):
-    def __init__(self, entry_id, wine_key, data, cellar_data: WineCellarData):
-        self._entry_id = entry_id
-        self._wine_key = wine_key
-        self._data = data
-        self._cellar_data = cellar_data
-        self._state = data.get("wine", "unknown")
 
-        # Slugify for unique_id and entity_id
-        name_without_size = re.sub(r'\s*\([^)]*\)\s*$', '', wine_key)
-        slug = self._slugify(name_without_size)
-        self._unique_id = f"cellar_tracker.wine.{slug}"
+class CellarWineSensor(Entity):
+    """Representation of a wine sensor."""
 
-    def _slugify(self, value):
+    def __init__(self, cellar_data: WineCellarData, wine_key: str):
+        self.cellar_data = cellar_data
+        self.wine_key = wine_key
+
+        # Remove size info from wine_key for sensor name/id
+        clean_name = self._remove_size_from_name(wine_key)
+
+        self._attr_name = f"cellar_tracker_wine_{self._slugify(clean_name)}"
+        self._attr_unique_id = self._attr_name
+
+        self._state = None
+        self._attributes = {}
+
+    def _remove_size_from_name(self, name: str) -> str:
+        # Remove patterns like '750ml', '1.5L', '500 ml' etc.
+        return re.sub(r'\b\d+(\.\d+)?\s?(ml|l|cl)\b', '', name, flags=re.IGNORECASE).strip()
+
+    def _slugify(self, value: str) -> str:
         value = value.lower()
-        value = re.sub(r'[^a-z0-9]+', '-', value).strip('-')
-        return re.sub(r'[_]+', '-', value)
+        value = re.sub(r'[^a-z0-9]+', '_', value).strip('_')
+        return value
 
     @property
     def name(self):
-        return f"CellarTracker: {self._data.get('wine', 'unknown')}"
+        return self._attr_name
 
     @property
     def unique_id(self):
-        return self._unique_id
+        return self._attr_unique_id
 
     @property
     def state(self):
@@ -68,34 +68,38 @@ class WineGroupedSensor(Entity):
 
     @property
     def extra_state_attributes(self):
-        attrs = self._data.copy()
-        attrs.pop("wine", None)
-        return attrs
-
-    @property
-    def icon(self):
-        return "mdi:bottle-wine"
+        return self._attributes
 
     async def async_update(self):
-        await self._cellar_data.async_update()
-        master_data = self._cellar_data.get_readings()
-        wine_info = master_data.get(self._wine_key, {})
-        self._data = wine_info
-        self._state = wine_info.get("wine", "unknown")
+        """Fetch updated state from coordinator."""
+        await self.cellar_data.async_update()
+        wine_info = self.cellar_data.get_wine_info(self.wine_key)
+
+        if wine_info:
+            self._state = wine_info.get("count", 0)
+            # Copy all other info except count to attributes
+            self._attributes = {k: v for k, v in wine_info.items() if k != "count"}
+        else:
+            self._state = None
+            self._attributes = {}
+
 
 class TotalBottleSensor(Entity):
-    def __init__(self, entry_id, cellar_data: WineCellarData):
-        self._entry_id = entry_id
-        self._cellar_data = cellar_data
+    """Sensor for total bottles in cellar."""
+
+    def __init__(self, cellar_data: WineCellarData):
+        self.cellar_data = cellar_data
+        self._attr_name = "cellar_tracker_total_bottles"
+        self._attr_unique_id = self._attr_name
         self._state = None
 
     @property
     def name(self):
-        return "CellarTracker Total Bottles"
+        return self._attr_name
 
     @property
     def unique_id(self):
-        return f"cellar_tracker_total_bottles_{self._entry_id}"
+        return self._attr_unique_id
 
     @property
     def state(self):
@@ -110,22 +114,26 @@ class TotalBottleSensor(Entity):
         return "bottles"
 
     async def async_update(self):
-        await self._cellar_data.async_update()
-        self._state = self._cellar_data.get_total_bottles()
+        await self.cellar_data.async_update()
+        self._state = self.cellar_data.get_total_bottles()
+
 
 class TotalValueSensor(Entity):
-    def __init__(self, entry_id, cellar_data: WineCellarData):
-        self._entry_id = entry_id
-        self._cellar_data = cellar_data
+    """Sensor for total cellar value."""
+
+    def __init__(self, cellar_data: WineCellarData):
+        self.cellar_data = cellar_data
+        self._attr_name = "cellar_tracker_total_value"
+        self._attr_unique_id = self._attr_name
         self._state = None
 
     @property
     def name(self):
-        return "CellarTracker Total Value"
+        return self._attr_name
 
     @property
     def unique_id(self):
-        return f"cellar_tracker_total_value_{self._entry_id}"
+        return self._attr_unique_id
 
     @property
     def state(self):
@@ -140,5 +148,5 @@ class TotalValueSensor(Entity):
         return "kr"
 
     async def async_update(self):
-        await self._cellar_data.async_update()
-        self._state = self._cellar_data.get_total_value()
+        await self.cellar_data.async_update()
+        self._state = self.cellar_data.get_total_value()

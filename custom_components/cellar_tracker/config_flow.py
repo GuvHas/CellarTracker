@@ -1,56 +1,67 @@
-"""Config flow for CellarTracker integration."""
 import logging
-from datetime import timedelta
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 
-from .cellar_data import WineCellarData
-from . import DOMAIN
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_SCAN_INTERVAL = 3600
-
 class CellarTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for CellarTracker."""
+
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
+
+    def __init__(self):
+        self.data = {}
 
     async def async_step_user(self, user_input=None):
         errors = {}
-
         if user_input is not None:
-            username = user_input[CONF_USERNAME]
-            password = user_input[CONF_PASSWORD]
-            scan_interval_seconds = user_input.get("scan_interval", DEFAULT_SCAN_INTERVAL)
-            scan_interval = timedelta(seconds=max(scan_interval_seconds, 30))
+            username = user_input.get("username")
+            password = user_input.get("password")
 
-            # Try to validate credentials by fetching inventory once
-            cellar_data = WineCellarData(self.hass, username, password, scan_interval)
-            try:
-                await cellar_data.async_update()
-            except Exception as e:
-                _LOGGER.error("Failed to fetch CellarTracker data: %s", e)
-                errors["base"] = "cannot_connect"
-            else:
-                return self.async_create_entry(
-                    title=f"CellarTracker ({username})",
-                    data={
-                        CONF_USERNAME: username,
-                        CONF_PASSWORD: password,
-                        "scan_interval": scan_interval_seconds,
-                    },
-                )
+            # Simple validation could be here, e.g., test login
+            # For now, just accept any input and proceed
+
+            self.data = user_input
+
+            return self.async_create_entry(title=username, data=user_input)
 
         data_schema = vol.Schema(
             {
-                vol.Required(CONF_USERNAME): str,
-                vol.Required(CONF_PASSWORD): str,
-                vol.Optional("scan_interval", default=DEFAULT_SCAN_INTERVAL): cv.positive_int,
+                vol.Required("username"): str,
+                vol.Required("password"): str,
+                vol.Optional("scan_interval", default=3600): cv.positive_int,
             }
         )
 
         return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        return CellarTrackerOptionsFlowHandler(config_entry)
+
+class CellarTrackerOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for CellarTracker."""
+
+    def __init__(self, config_entry):
+        self.config_entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        errors = {}
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        data_schema = vol.Schema(
+            {
+                vol.Optional(
+                    "scan_interval",
+                    default=self.config_entry.options.get("scan_interval", 3600),
+                ): cv.positive_int,
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=data_schema)
