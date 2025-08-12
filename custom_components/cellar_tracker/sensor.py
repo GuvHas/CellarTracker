@@ -1,42 +1,53 @@
-"""Platform for sensor integration."""
-from homeassistant.helpers.entity import Entity
-from homeassistant.util import Throttle
-from .cellar_data import WineCellarData
+"""Sensor platform for CellarTracker integration."""
+
 import logging
 import re
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+
+from .cellar_data import WineCellarData
 from . import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    if discovery_info is None:
-        return
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up sensors for CellarTracker from a config entry."""
+    cellar_data: WineCellarData = hass.data[DOMAIN][entry.entry_id]
 
-    devs = []
-    cellar_data = hass.data[DOMAIN]
-    master_data = cellar_data.get_readings()
-    scan_interval = cellar_data.get_scan_interval()
+    await cellar_data.async_update()
 
-    # Add wine grouped sensors
-    for wine_key, data in master_data.items():
-        devs.append(WineGroupedSensor("wine", wine_key, data, scan_interval))
+    sensors = []
 
-    # Add total bottle and total value sensors
-    devs.append(TotalBottleSensor(cellar_data, scan_interval))
-    devs.append(TotalValueSensor(cellar_data, scan_interval))
+    # Create wine sensors
+    for wine_key, data in cellar_data.get_readings().items():
+        sensors.append(WineGroupedSensor(entry.entry_id, wine_key, data, cellar_data))
 
-    add_entities(devs, True)
+    # Total bottles and total value sensors
+    sensors.append(TotalBottleSensor(entry.entry_id, cellar_data))
+    sensors.append(TotalValueSensor(entry.entry_id, cellar_data))
+
+    async_add_entities(sensors, True)
 
 class WineGroupedSensor(Entity):
-    def __init__(self, sensor_type, wine_key, data, scan_interval):
-        self._sensor_type = sensor_type
+    def __init__(self, entry_id, wine_key, data, cellar_data: WineCellarData):
+        self._entry_id = entry_id
         self._wine_key = wine_key
         self._data = data
+        self._cellar_data = cellar_data
         self._state = data.get("wine", "unknown")
-        self.update = Throttle(scan_interval)(self._update)
 
+        # Slugify for unique_id and entity_id
         name_without_size = re.sub(r'\s*\([^)]*\)\s*$', '', wine_key)
-        self._slug = self._slugify(name_without_size)
+        slug = self._slugify(name_without_size)
+        self._unique_id = f"cellar_tracker.wine.{slug}"
 
     def _slugify(self, value):
         value = value.lower()
@@ -45,11 +56,11 @@ class WineGroupedSensor(Entity):
 
     @property
     def name(self):
-        return f"cellar_tracker.{self._sensor_type}.{self._slug}"
+        return f"CellarTracker: {self._data.get('wine', 'unknown')}"
 
     @property
     def unique_id(self):
-        return f"cellar_tracker.{self._sensor_type}.{self._slug}"
+        return self._unique_id
 
     @property
     def state(self):
@@ -65,31 +76,26 @@ class WineGroupedSensor(Entity):
     def icon(self):
         return "mdi:bottle-wine"
 
-    @property
-    def unit_of_measurement(self):
-        return None
-
-    def _update(self):
-        _LOGGER.debug(f"Updating sensor: {self.name}")
-        self.hass.data[DOMAIN].update()
-        master_data = self.hass.data[DOMAIN].get_readings()
+    async def async_update(self):
+        await self._cellar_data.async_update()
+        master_data = self._cellar_data.get_readings()
         wine_info = master_data.get(self._wine_key, {})
         self._data = wine_info
         self._state = wine_info.get("wine", "unknown")
 
 class TotalBottleSensor(Entity):
-    def __init__(self, data_source, scan_interval):
-        self._data_source = data_source
-        self._state = 0
-        self.update = Throttle(scan_interval)(self._update)
+    def __init__(self, entry_id, cellar_data: WineCellarData):
+        self._entry_id = entry_id
+        self._cellar_data = cellar_data
+        self._state = None
 
     @property
     def name(self):
-        return "cellar_tracker.total_bottles"
+        return "CellarTracker Total Bottles"
 
     @property
     def unique_id(self):
-        return "cellar_tracker.total_bottles"
+        return f"cellar_tracker_total_bottles_{self._entry_id}"
 
     @property
     def state(self):
@@ -103,24 +109,23 @@ class TotalBottleSensor(Entity):
     def unit_of_measurement(self):
         return "bottles"
 
-    def _update(self):
-        _LOGGER.debug("Updating total bottles sensor")
-        self._data_source.update()
-        self._state = self._data_source.get_total_bottles()
+    async def async_update(self):
+        await self._cellar_data.async_update()
+        self._state = self._cellar_data.get_total_bottles()
 
 class TotalValueSensor(Entity):
-    def __init__(self, data_source, scan_interval):
-        self._data_source = data_source
-        self._state = 0.0
-        self.update = Throttle(scan_interval)(self._update)
+    def __init__(self, entry_id, cellar_data: WineCellarData):
+        self._entry_id = entry_id
+        self._cellar_data = cellar_data
+        self._state = None
 
     @property
     def name(self):
-        return "cellar_tracker.total_value"
+        return "CellarTracker Total Value"
 
     @property
     def unique_id(self):
-        return "cellar_tracker.total_value"
+        return f"cellar_tracker_total_value_{self._entry_id}"
 
     @property
     def state(self):
@@ -132,9 +137,8 @@ class TotalValueSensor(Entity):
 
     @property
     def unit_of_measurement(self):
-        return "kr"  # or change to your currency
+        return "kr"
 
-    def _update(self):
-        _LOGGER.debug("Updating total value sensor")
-        self._data_source.update()
-        self._state = self._data_source.get_total_value()
+    async def async_update(self):
+        await self._cellar_data.async_update()
+        self._state = self._cellar_data.get_total_value()

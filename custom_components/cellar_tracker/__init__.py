@@ -1,43 +1,109 @@
-"""CellarTracker integration for Home Assistant."""
+"""Handles data fetching and grouping from CellarTracker asynchronously."""
 
-from .cellar_data import WineCellarData
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD, CONF_SCAN_INTERVAL
-from homeassistant.helpers import discovery as hdisco
-from datetime import timedelta
-import voluptuous as vol
-import homeassistant.helpers.config_validation as cv
 import logging
+from datetime import timedelta
+import asyncio
 
-DOMAIN = "cellar_tracker"
+import pandas as pd
+from homeassistant.util import Throttle
+
+from cellartracker import cellartracker  # Ensure cellartracker is installed and async-capable or wrap sync
 
 _LOGGER = logging.getLogger(__name__)
 
-CONFIG_SCHEMA = vol.Schema(
-    {
-        DOMAIN: vol.Schema(
-            {
-                vol.Required(CONF_USERNAME): cv.string,
-                vol.Required(CONF_PASSWORD): cv.string,
-                vol.Optional(CONF_SCAN_INTERVAL, default=3600): cv.positive_int,
+MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=3600)
+
+class WineCellarData:
+    """Fetch and group data from CellarTracker."""
+
+    def __init__(self, hass, username, password, scan_interval: timedelta):
+        self._hass = hass
+        self._username = username
+        self._password = password
+        self._scan_interval = scan_interval
+        self._data = {}
+        self._total_bottles = 0
+        self._total_value = 0.0
+
+        # Throttle updates
+        self.async_update = Throttle(scan_interval)(self._async_update)
+
+    def get_readings(self):
+        return self._data
+
+    def get_total_bottles(self):
+        return self._total_bottles
+
+    def get_total_value(self):
+        return self._total_value
+
+    async def _async_update(self, **kwargs):
+        """Fetch inventory data asynchronously."""
+        _LOGGER.debug("Updating data from CellarTracker")
+
+        # Since cellartracker library is likely sync, run in executor
+        def fetch_inventory():
+            client = cellartracker.CellarTracker(self._username, self._password)
+            return client.get_inventory()
+
+        try:
+            inventory = await self._hass.async_add_executor_job(fetch_inventory)
+        except Exception as err:
+            _LOGGER.error("Error fetching CellarTracker inventory: %s", err)
+            return
+
+        if not inventory:
+            _LOGGER.warning("Empty inventory received")
+            return
+
+        df = pd.DataFrame(inventory)
+        _LOGGER.debug(f"Columns in inventory: {df.columns.tolist()}")
+
+        # Clean and convert data
+        df['Valuation'] = df['Valuation'].astype(str).str.replace(',', '.').astype(float)
+        df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
+        df['WineKey'] = df.apply(lambda x: f"{x['Vintage']} {x['Wine']} ({x['Size']})", axis=1)
+
+        grouped = df.groupby('WineKey')
+        total_valuation = df['Valuation'].sum()
+
+        wine_data = {}
+        total_bottles = 0
+        total_value = 0.0
+
+        for key, group in grouped:
+            count = len(group)
+            value_total = float(group['Valuation'].sum())
+            value_avg = float(group['Valuation'].mean())
+            percentage = (value_total / total_valuation * 100) if total_valuation > 0 else 0.0
+
+            total_bottles += count
+            total_value += value_total
+
+            first = group.iloc[0]
+
+            wine_data[key] = {
+                "count": count,
+                "value_total": value_total,
+                "value_avg": value_avg,
+                "%": percentage,
+                "vintage": first["Vintage"],
+                "wine": first["Wine"],
+                "varietal": first.get("Varietal", ""),
+                "producer": first.get("Producer", ""),
+                "type": first.get("Type", ""),
+                "appellation": first.get("Appellation", ""),
+                "country": first.get("Country", ""),
+                "region": first.get("Region", ""),
+                "location": first.get("Location", ""),
+                "store": first.get("StoreName", ""),
+                "size": first["Size"],
+                "beginconsume": first["BeginConsume"],
+                "endconsume": first["EndConsume"],
+                "bins": [b for b in group["Bin"] if b],
             }
-        )
-    },
-    extra=vol.ALLOW_EXTRA,
-)
 
-def setup(hass, config):
-    conf = config[DOMAIN]
-
-    username = conf[CONF_USERNAME]
-    password = conf[CONF_PASSWORD]
-    scan_interval_seconds = max(conf[CONF_SCAN_INTERVAL], 30)  # Min 30 sek
-    scan_interval = timedelta(seconds=scan_interval_seconds)
-
-    _LOGGER.debug("Initializing CellarTracker with scan interval %s", scan_interval)
-
-    hass.data[DOMAIN] = WineCellarData(username, password, scan_interval)
-    hass.data[DOMAIN].update()
-
-    hdisco.load_platform(hass, "sensor", DOMAIN, {}, config)
-
-    return True
+        self._data = wine_data
+        self._total_bottles = total_bottles
+        self._total_value = round(total_value, 2)
+        _LOGGER.debug("CellarTracker data updated successfully")
