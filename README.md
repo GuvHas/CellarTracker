@@ -17,3 +17,4 @@ Manually add the repository to HACS
 # Configuration:
 Add the integration under Settings / Devices & Services.
 Then fill out the configuration using your CellarTracker! username and password.
+Optionally change the time between refreshes (Default 1 hour)

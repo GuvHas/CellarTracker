@@ -1,115 +1,108 @@
-"""Handles async data fetching and grouping from CellarTracker."""
+# cellar_data.py
 
 import logging
-import pandas as pd
 from datetime import timedelta
-import asyncio
+import hashlib
 
-from cellartracker import cellartracker
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+class WineCellarData(DataUpdateCoordinator):
+    """Fetch and process CellarTracker inventory data."""
 
-class WineCellarData:
-    """Fetch and group data from CellarTracker asynchronously."""
-
-    def __init__(self, hass, username: str, password: str, update_interval: timedelta):
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
+        """Initialize the data coordinator."""
         self._hass = hass
-        self._username = username
-        self._password = password
-        self._update_interval = update_interval
-        self._data = {}
-        self._total_bottles = 0
-        self._total_value = 0.0
-        self._lock = asyncio.Lock()
+        self._username = entry.data["username"]
+        self._password = entry.data["password"]
 
-    @property
-    def total_bottles(self):
-        return self._total_bottles
+        scan_interval = timedelta(
+            seconds=entry.options.get("scan_interval", entry.data.get("scan_interval", 3600))
+        )
 
-    @property
-    def total_value(self):
-        return self._total_value
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=DOMAIN,
+            update_interval=scan_interval,
+        )
+        
+        from cellartracker import cellartracker
+        self._client = cellartracker.CellarTracker(self._username, self._password)
 
-    def get_readings(self):
-        return self._data
 
-    def get_reading(self, key: str):
-        return self._data.get(key, {})
+    def _process_inventory(self, inventory: list) -> dict:
+        """Process the raw inventory list into a structured dictionary."""
+        if not inventory:
+            _LOGGER.warning("CellarTracker returned empty inventory")
+            return {"total_bottles": 0, "total_value": 0.0, "bottles": []}
 
-    async def async_update(self):
-        """Fetch data from CellarTracker asynchronously and update internal state."""
-        async with self._lock:
-            _LOGGER.debug("Starting update from CellarTracker")
+        total_value = 0.0
+        processed_bottles = []
+        
+        # Keep track of generated IDs to ensure they are truly unique.
+        seen_ids = set()
 
-            def sync_fetch():
-                client = cellartracker.CellarTracker(self._username, self._password)
-                return client.get_inventory()
+        for bottle in inventory:
+            if 'iWine' not in bottle:
+                _LOGGER.warning("Skipping bottle because it's missing the 'iWine' identifier: %s", bottle)
+                continue
+
+            # --- STABLE UNIQUE ID GENERATION ---
+            # Create a stable ID from attributes that don't change.
+            # We combine multiple attributes to ensure uniqueness.
+            # Using a hash prevents the ID from becoming excessively long.
+            
+            base_id_string = (
+                f"{bottle['iWine']}_"
+                f"{bottle.get('PurchaseDate', '')}_"
+                f"{bottle.get('Barcode', '')}_"
+                f"{bottle.get('Location', '')}_"
+                f"{bottle.get('Bin', '')}"
+            )
+            
+            # If multiple bottles have the exact same attributes, we add a counter.
+            counter = 0
+            unique_id = hashlib.sha1(base_id_string.encode('utf-8')).hexdigest()[:16]
+            temp_id = unique_id
+            
+            while temp_id in seen_ids:
+                counter += 1
+                temp_id = f"{unique_id}_{counter}"
+            
+            unique_id = temp_id
+            seen_ids.add(unique_id)
+            bottle['unique_bottle_id'] = unique_id
+            # --- END OF STABLE ID LOGIC ---
 
             try:
-                inventory = await self._hass.async_add_executor_job(sync_fetch)
-            except Exception as e:
-                _LOGGER.error("Error fetching CellarTracker data: %s", e)
-                return
+                valuation = float(bottle.get('Valuation', 0.0))
+                bottle['Valuation'] = valuation
+                total_value += valuation
+            except (ValueError, TypeError):
+                bottle['Valuation'] = 0.0
+            
+            processed_bottles.append(bottle)
+        
+        total_bottles = len(processed_bottles)
 
-            if not inventory:
-                _LOGGER.warning("Empty inventory received from CellarTracker")
-                return
+        return {
+            "total_bottles": total_bottles,
+            "total_value": round(total_value, 2),
+            "bottles": processed_bottles,
+        }
 
-            df = pd.DataFrame(inventory)
-            _LOGGER.debug(f"Inventory columns: {df.columns.tolist()}")
+    async def _async_update_data(self) -> dict:
+        """Fetch inventory from CellarTracker asynchronously."""
+        try:
+            inventory_list = await self._hass.async_add_executor_job(self._client.get_inventory)
+            return await self._hass.async_add_executor_job(self._process_inventory, inventory_list)
 
-            # Clean and convert numeric fields
-            df['Valuation'] = (
-                df['Valuation'].astype(str).str.replace(',', '.').astype(float)
-            )
-            df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
-
-            # Compose wine key without size for sensor naming
-            df['WineKey'] = df.apply(
-                lambda x: f"{x['Vintage']} {x['Wine']}", axis=1
-            )
-
-            grouped = df.groupby('WineKey')
-            total_valuation = df['Valuation'].sum()
-
-            wine_data = {}
-            total_bottles = 0
-            total_value = 0.0
-
-            for key, group in grouped:
-                count = len(group)
-                value_total = float(group['Valuation'].sum())
-                value_avg = float(group['Valuation'].mean())
-                percentage = (value_total / total_valuation * 100) if total_valuation > 0 else 0.0
-
-                total_bottles += count
-                total_value += value_total
-
-                first = group.iloc[0]
-
-                wine_data[key] = {
-                    "count": count,
-                    "value_total": value_total,
-                    "value_avg": value_avg,
-                    "%": percentage,
-                    "vintage": first["Vintage"],
-                    "wine": first["Wine"],
-                    "varietal": first.get("Varietal", ""),
-                    "producer": first.get("Producer", ""),
-                    "type": first.get("Type", ""),
-                    "appellation": first.get("Appellation", ""),
-                    "country": first.get("Country", ""),
-                    "region": first.get("Region", ""),
-                    "location": first.get("Location", ""),
-                    "store": first.get("StoreName", ""),
-                    "size": first["Size"],
-                    "beginconsume": first["BeginConsume"],
-                    "endconsume": first["EndConsume"],
-                    "bins": [b for b in group["Bin"] if b],
-                }
-
-            self._data = wine_data
-            self._total_bottles = total_bottles
-            self._total_value = round(total_value, 2)
-            _LOGGER.debug("CellarTracker data updated successfully")
+        except Exception as e:
+            _LOGGER.error("Error communicating with CellarTracker API: %s", e)
+            raise UpdateFailed(f"Error communicating with CellarTracker API: {e}")

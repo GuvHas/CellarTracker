@@ -1,67 +1,84 @@
+# config_flow.py
+
 import logging
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.helpers import config_validation as cv
+from homeassistant.const import CONF_USERNAME, CONF_PASSWORD, CONF_SCAN_INTERVAL
 
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+DATA_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_USERNAME): str,
+        vol.Required(CONF_PASSWORD): str,
+        vol.Optional(CONF_SCAN_INTERVAL, default=3600): vol.All(vol.Coerce(int), vol.Range(min=300)),
+    }
+)
 
 class CellarTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for CellarTracker."""
 
     VERSION = 1
 
-    def __init__(self):
-        self.data = {}
-
     async def async_step_user(self, user_input=None):
+        """Handle the initial user step."""
         errors = {}
+
         if user_input is not None:
-            username = user_input.get("username")
-            password = user_input.get("password")
+            try:
+                def _validate_credentials():
+                    """Validate credentials by authenticating and fetching data."""
+                    from cellartracker import cellartracker
+                    
+                    client = cellartracker.CellarTracker(user_input[CONF_USERNAME], user_input[CONF_PASSWORD])
+                    client.get_inventory()
+                    return True
+                
+                await self.hass.async_add_executor_job(_validate_credentials)
+                
+                await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
+                self._abort_if_unique_id_configured()
+                
+                return self.async_create_entry(title=user_input[CONF_USERNAME], data=user_input)
 
-            # Simple validation could be here, e.g., test login
-            # For now, just accept any input and proceed
-
-            self.data = user_input
-
-            return self.async_create_entry(title=username, data=user_input)
-
-        data_schema = vol.Schema(
-            {
-                vol.Required("username"): str,
-                vol.Required("password"): str,
-                vol.Optional("scan_interval", default=3600): cv.positive_int,
-            }
+            except Exception:
+                _LOGGER.exception("Failed to connect to CellarTracker with provided credentials")
+                errors["base"] = "auth"
+        
+        return self.async_show_form(
+            step_id="user", data_schema=DATA_SCHEMA, errors=errors
         )
-
-        return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry):
+        """Return the options flow handler."""
         return CellarTrackerOptionsFlowHandler(config_entry)
+
 
 class CellarTrackerOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow for CellarTracker."""
 
-    def __init__(self, config_entry):
-        self.config_entry = config_entry
+    # The __init__ method has been completely removed as it is no longer necessary.
+    # The 'self.config_entry' attribute is now automatically provided by the base class.
 
     async def async_step_init(self, user_input=None):
-        errors = {}
+        """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        data_schema = vol.Schema(
+        current_scan_interval = self.config_entry.options.get(
+            CONF_SCAN_INTERVAL, self.config_entry.data.get(CONF_SCAN_INTERVAL, 3600)
+        )
+
+        options_schema = vol.Schema(
             {
-                vol.Optional(
-                    "scan_interval",
-                    default=self.config_entry.options.get("scan_interval", 3600),
-                ): cv.positive_int,
+                vol.Optional(CONF_SCAN_INTERVAL, default=current_scan_interval): vol.All(vol.Coerce(int), vol.Range(min=300)),
             }
         )
-        return self.async_show_form(step_id="init", data_schema=data_schema)
+
+        return self.async_show_form(step_id="init", data_schema=options_schema)

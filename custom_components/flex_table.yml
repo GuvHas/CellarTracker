@@ -1,47 +1,51 @@
-type: custom:flex-table-card
-title: Wine Cellar Dashboard
-entities:
+type: custom:auto-entities
+card:
+  type: custom:flex-table-card
+  title: Wine Cellar
+  clickable: true
+  unsafe_render_html: true
+  columns:
+    - name: Wine
+      data: Wine
+    - name: Vintage
+      data: Vintage
+    - name: Rack
+      data: state
+    - name: Bin
+      data: Bin
+    - name: Country
+      data: Country
+    - name: Drink From
+      data: BeginConsume
+      modify: |
+        (() => {
+          const year = new Date().getFullYear();
+          const val = parseInt(x);
+          if (!x || isNaN(val)) return '—';
+          const color = val > year ? '#f44336' : '#4CAF50';
+          return `<span style="color:${color}">${x}</span>`;
+        })()        
+    - name: Drink By
+      data: EndConsume
+      modify: |
+        (() => {
+          const year = new Date().getFullYear();
+          const val = parseInt(x);
+          if (!x || isNaN(val)) return '—';
+          const color = val > year ? '#4CAF50' : '#f44336';
+         return `<span style="color:${color}">${x}</span>`;
+        })()      
+    - name: Value
+      data: Valuation
+      modify: parseFloat(x).toFixed(0)
+filter:
   include:
-    - sensor.cellar_tracker_wine*
-clickable: true
-tap_action:
-  action: more-info
-unsafe_render_html: true
-columns:
-  - name: Wine
-    data: state
-    click_action: more-info
-  - name: Rack
-    data: location
-  - name: Bin
-    data: bins
-    modify: |
-      (() => {
-        if (!x || x.length === 0) return '';
-        return Array.isArray(x) ? x.join(', ') : x;
-      })()
-  - name: Country
-    data: country
-  - name: BeginConsume
-    data: beginconsume
-    modify: |
-      (() => {
-        const year = new Date().getFullYear();
-        const val = parseInt(x);
-        const color = val > year ? 'red' : 'green';
-        return `<span style="color:${color}">${x}</span>`;
-      })()
-  - name: EndConsume
-    data: endconsume
-    modify: |
-      (() => {
-        const year = new Date().getFullYear();
-        const val = parseInt(x);
-        const color = val > year ? 'green' : 'red';
-        return `<span style="color:${color}">${x}</span>`;
-      })()
-  - name: Value
-    data: value_avg
-    type: numeric
-    suffix: " kr"
-    modify: parseFloat(x).toFixed(0)
+    - options: {}
+      entity_id: sensor.cellartracker_*
+  exclude:
+    - options: {}
+      entity_id: sensor.cellartracker_total_bottles
+    - options: {}
+      entity_id: sensor.cellartracker_total_value
+sort:
+  method: name

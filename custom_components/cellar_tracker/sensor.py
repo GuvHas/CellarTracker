@@ -1,145 +1,125 @@
-"""Sensor platform for CellarTracker integration."""
+# sensor.py
 
-import logging
-import re
-from homeassistant.helpers.entity import Entity
-from homeassistant.core import HomeAssistant
+from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import DiscoveryInfoType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .const import DOMAIN
 from .cellar_data import WineCellarData
-from . import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType = None,
 ) -> None:
-    """Set up the sensor platform for CellarTracker."""
-    cellar_data: WineCellarData = hass.data[DOMAIN][entry.entry_id]
+    """Set up the sensor platform."""
+    coordinator: WineCellarData = hass.data[DOMAIN][entry.entry_id]
 
-    await cellar_data.async_update()
+    device_info = {
+        "identifiers": {(DOMAIN, entry.entry_id)},
+        "name": "CellarTracker",
+        "manufacturer": "CellarTracker",
+        "model": "Online Cellar",
+        "entry_type": "service",
+    }
 
-    sensors = []
+    sensors = [
+        TotalBottlesSensor(coordinator, device_info, entry.entry_id),
+        TotalValueSensor(coordinator, device_info, entry.entry_id),
+    ]
 
-    # Add total bottles sensor
-    sensors.append(CellarTotalBottlesSensor(cellar_data))
-    # Add total value sensor
-    sensors.append(CellarTotalValueSensor(cellar_data))
+    if coordinator.data and "bottles" in coordinator.data:
+        for bottle_data in coordinator.data["bottles"]:
+            if bottle_data.get("unique_bottle_id"):
+                sensors.append(WineBottleSensor(coordinator, device_info, entry.entry_id, bottle_data))
 
-    # Add per-wine sensors
-    for wine_key, data in cellar_data.get_readings().items():
-        sensors.append(WineGroupedSensor(wine_key, data, cellar_data))
-
-    async_add_entities(sensors, True)
+    async_add_entities(sensors, update_before_add=True)
 
 
-class CellarTotalBottlesSensor(Entity):
-    def __init__(self, cellar_data: WineCellarData):
-        self._cellar_data = cellar_data
-        self._state = None
+class TotalBottlesSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for the total number of bottles in the cellar."""
 
-    @property
-    def name(self) -> str:
-        return "cellar_tracker.total_bottles"
-
-    @property
-    def unique_id(self) -> str:
-        return "cellar_tracker_total_bottles"
-
-    @property
-    def state(self):
-        return self._state
+    def __init__(self, coordinator, device_info, entry_id):
+        super().__init__(coordinator)
+        self._attr_name = "CellarTracker Total Bottles"
+        self._attr_unique_id = f"{entry_id}_total_bottles"
+        self._attr_icon = "mdi:bottle-wine"
+        self._attr_device_info = device_info
 
     @property
-    def icon(self) -> str:
-        return "mdi:glass-wine"
-
-    async def async_update(self):
-        await self._cellar_data.async_update()
-        self._state = self._cellar_data.total_bottles
+    def native_value(self):
+        """Return the state of the sensor."""
+        return self.coordinator.data.get("total_bottles", 0)
 
 
-class CellarTotalValueSensor(Entity):
-    def __init__(self, cellar_data: WineCellarData):
-        self._cellar_data = cellar_data
-        self._state = None
+class TotalValueSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for the total value of the cellar."""
 
-    @property
-    def name(self) -> str:
-        return "cellar_tracker.total_value"
+    def __init__(self, coordinator, device_info, entry_id):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_name = "CellarTracker Total Value"
+        self._attr_unique_id = f"{entry_id}_total_value"
+        self._attr_device_info = device_info
 
-    @property
-    def unique_id(self) -> str:
-        return "cellar_tracker_total_value"
+        # --- MODIFICATIONS START HERE ---
 
-    @property
-    def state(self):
-        return self._state
+        # Set the icon to the Euro symbol
+        self._attr_icon = "mdi:currency-eur"
 
-    @property
-    def icon(self) -> str:
-        return "mdi:currency-eur"
+        # Set the unit of measurement to "kr"
+        self._attr_native_unit_of_measurement = "kr"
+        
+        # --- MODIFICATIONS END HERE ---
 
     @property
-    def unit_of_measurement(self):
-        return "kr"
-
-    async def async_update(self):
-        await self._cellar_data.async_update()
-        self._state = self._cellar_data.total_value
+    def native_value(self):
+        """Return the state of the sensor."""
+        return self.coordinator.data.get("total_value", 0.0)
 
 
-class WineGroupedSensor(Entity):
-    def __init__(self, wine_key: str, data: dict, cellar_data: WineCellarData):
-        self._wine_key = wine_key
-        self._data = data
-        self._cellar_data = cellar_data
-        self._state = data.get("wine", "unknown")
+class WineBottleSensor(CoordinatorEntity, SensorEntity):
+    """Represents a single bottle of wine in the cellar."""
 
-        # Create slug removing size info from wine_key, e.g. "2011 Some Wine (750ml)" -> "2011-some-wine"
-        name_without_size = re.sub(r"\s*\([^)]*\)\s*$", "", wine_key)
-        self._slug = self._slugify(name_without_size)
-
-    def _slugify(self, value: str) -> str:
-        value = value.lower()
-        value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
-        return re.sub(r"[-]+", "-", value)
+    def __init__(self, coordinator, device_info, entry_id, bottle_data):
+        """Initialize the wine bottle sensor."""
+        super().__init__(coordinator)
+        self.has_entity_name = True
+        self._bottle_id = bottle_data["unique_bottle_id"]
+        
+        self._attr_device_info = device_info
+        self._attr_unique_id = f"{entry_id}_{self._bottle_id}"
+        
+        wine_name = f"{bottle_data.get('Vintage', '')} {bottle_data.get('Wine', '')}".strip()
+        self._attr_name = f"{wine_name} ({bottle_data.get('Bin') or 'No Bin'})"
+        self._attr_icon = "mdi:bottle-wine"
 
     @property
-    def name(self) -> str:
-        return f"cellar_tracker.wine.{self._slug}"
+    def _current_bottle_data(self) -> dict | None:
+        """Find the data for this specific bottle from the coordinator's latest update."""
+        return next(
+            (bottle for bottle in self.coordinator.data.get("bottles", []) 
+             if bottle.get("unique_bottle_id") == self._bottle_id),
+            None
+        )
 
     @property
-    def unique_id(self) -> str:
-        return f"cellar_tracker.wine.{self._slug}"
+    def available(self) -> bool:
+        """Return True if the bottle exists in the coordinator's data and the coordinator is available."""
+        return self.coordinator.last_update_success and self._current_bottle_data is not None
 
     @property
-    def state(self):
-        return self._state
+    def native_value(self):
+        """Return the state of the sensor (the bottle's location)."""
+        if data := self._current_bottle_data:
+            return data.get("Location")
+        return None
 
     @property
     def extra_state_attributes(self):
-        attrs = self._data.copy()
-        attrs.pop("wine", None)
-        return attrs
-
-    @property
-    def icon(self) -> str:
-        return "mdi:bottle-wine"
-
-    @property
-    def unit_of_measurement(self):
-        return None
-
-    async def async_update(self):
-        _LOGGER.debug(f"Updating sensor {self.name}")
-        await self._cellar_data.async_update()
-        updated_data = self._cellar_data.get_reading(self._wine_key)
-        self._data = updated_data
-        self._state = updated_data.get("wine", "unknown")
+        """Return all other details of the bottle as attributes."""
+        if data := self._current_bottle_data:
+            return data
+        return {}
