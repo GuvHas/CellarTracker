@@ -1,5 +1,9 @@
 # Disclaimer
-This is an personal attempt at integrating Cellar Tracker to Home Assistant, I am in no way affiliated or connected to CellarTracker! LLC.
+This is an personal attempt at creating an integration to CellarTracker to Home Assistant, I am in no way affiliated or connected to CellarTracker! LLC.
+The aim is to fecth the data from CellarTracker and display it in a nice way in a dashboard.
+
+Creates one sensor for each bottle in the inventory, with the information (location, country, appellation, producer etc) as attributes,
+Creates two more senors, for total value and total number of bottles.
 
 "CellarTracker!" is a trademark of CellarTracker! LLC
 
@@ -15,6 +19,6 @@ Manually add the repository to HACS
 - **Category:** Integration
 
 # Configuration:
-Add the integration under Settings / Devices & Services.
+After adding to HACS, add the integration under Settings / Devices & Services.
 Then fill out the configuration using your CellarTracker! username and password.
 Optionally change the time between refreshes (Default 1 hour)
