@@ -1,5 +1,6 @@
 # Disclaimer
 This is an personal attempt at creating an integration to CellarTracker to Home Assistant, I am in no way affiliated or connected to CellarTracker! LLC.
+
 The aim is to fecth the data from CellarTracker and display it in a nice way in a dashboard.
 
 Creates one sensor for each bottle in the inventory, with the information (location, country, appellation, producer etc) as attributes,
