@@ -47,5 +47,9 @@ filter:
       entity_id: sensor.cellartracker_total_bottles
     - options: {}
       entity_id: sensor.cellartracker_total_value
+    - options: {}
+      state: unavailable
+    - options: {}
+      state: unknown
 sort:
   method: name
